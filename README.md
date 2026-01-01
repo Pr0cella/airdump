@@ -1504,12 +1504,6 @@ python3 -m analysis.reporter --scan-id 20251225_001 --all
 
 ---
 
-## License
-
-Private/Internal Use - Property of [Your Organization]
-
----
-
 ## Changelog
 
 - **2025-12-25**: Initial project specification
