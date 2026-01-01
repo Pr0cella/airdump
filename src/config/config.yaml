@@ -1,0 +1,268 @@
+# Project Airdump - Main Configuration
+# Copy to config.yaml and customize for your deployment
+
+# =============================================================================
+# GENERAL SETTINGS
+# =============================================================================
+
+general:
+  # Unique identifier for this node (used in swarm mode)
+  node_id: "drone_alpha"
+  
+  # Property being scanned (for reports)
+  property_id: "FACILITY-A"
+  
+  # Operator name
+  operator: "admin"
+  
+  # Data directory (use ./data for local dev, /opt/airdump/data for production)
+  data_dir: "./data"
+  
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+
+database:
+  # Path to SQLite database
+  path: "${data_dir}/database/airdump.db"
+  
+  # Enable SQLCipher encryption
+  # Key must be provided via CLI (--db-key) or controller injection
+  encryption:
+    enabled: false
+    # Key file location (tmpfs, RAM only)
+    key_file: "/run/airdump/db.key"
+
+# =============================================================================
+# KISMET
+# =============================================================================
+
+kismet:
+  # Kismet REST API endpoint
+  host: "localhost"
+  port: 2501
+  
+  # API credentials (from kismet_httpd.conf)
+  username: "kismet"
+  password: "4472!"
+  
+  # Poll interval in seconds
+  poll_interval: 2.0
+  
+  # WiFi interface for monitor mode
+  wifi_interface: "wlp3s0"
+  
+  # Bluetooth interface
+  bt_interface: "hci0"
+
+# =============================================================================
+# GPS
+# =============================================================================
+
+gps:
+  # Enable GPS tracking (requires gpsd running)
+  # Can be enabled at runtime with: ./airdump scan --gps
+  enabled: false
+  
+  # gpsd connection
+  host: "localhost"
+  port: 2947
+  
+  # Poll interval in seconds
+  poll_interval: 1.0
+  
+  # Wait for GPS fix before starting scan
+  wait_for_fix: false
+  
+  # Timeout for GPS fix (seconds)
+  fix_timeout: 30
+  
+  # Minimum satellites for valid fix
+  min_satellites: 4
+  
+  # Export GPX track
+  export_gpx: true
+
+# =============================================================================
+# PACKET CAPTURE (tshark)
+# =============================================================================
+
+capture:
+  # Enable packet capture
+  enabled: true
+  
+  # Interface - leave empty for auto-detect, or specify monitor interface name
+  # Will use wlan0mon, wlan1mon, or the interface set to monitor mode
+  interface: ""
+  
+  # Output directory for pcap files
+  output_dir: "${data_dir}/pcap"
+  
+  # File rotation size (MB)
+  rotate_size_mb: 100
+  
+  # Maximum total storage (MB) - oldest files deleted when exceeded
+  max_storage_mb: 10000
+  
+  # Capture filter (BPF syntax)
+  # Empty = capture all wireless frames
+  filter: ""
+  
+  # GPG encryption
+  gpg:
+    enabled: false
+    # Path to GPG public key for encryption (generate with: ./airdump --create-keypair)
+    public_key: "${data_dir}/config/airdump-public.gpg"
+    # Path to GPG private key for decryption (keep secure!)
+    private_key: "${data_dir}/config/airdump-private.gpg"
+
+# =============================================================================
+# CHANNEL HOPPING
+# =============================================================================
+
+channel_hopping:
+  # Mode: fast, slow, or adaptive
+  mode: "adaptive"
+  
+  fast_hop:
+    channels_24ghz: [1, 6, 11]
+    channels_5ghz: [36, 40, 44, 48, 149, 153, 157, 161]
+    dwell_ms: 150
+    
+  slow_hop:
+    channels_24ghz: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    channels_5ghz: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165]
+    dwell_ms: 750
+    
+  adaptive:
+    # Switch to fast hop above this speed (m/s)
+    velocity_threshold_ms: 2.0
+    # Seconds stationary before slow hop
+    hover_timeout_s: 5
+
+# =============================================================================
+# FINGERPRINTING
+# =============================================================================
+
+fingerprinting:
+  # Enable device fingerprinting
+  enabled: true
+  
+  # Signature database path
+  signatures_db: "${data_dir}/config/fingerprints.db"
+  
+  # Minimum confidence for identification
+  min_confidence: 0.7
+  
+  # Store unknown fingerprints for learning
+  store_unknown: true
+
+# =============================================================================
+# POWER MONITORING
+# =============================================================================
+
+power:
+  # Enable power monitoring
+  enabled: false
+  
+  # ADC path for voltage reading (platform-specific)
+  adc_path: "/sys/bus/iio/devices/iio:device0/in_voltage0_raw"
+  
+  # Voltage divider ratio (for scaling ADC reading)
+  voltage_divider_ratio: 3.0
+  
+  # Battery thresholds (2S LiPo)
+  warning_voltage: 7.0
+  critical_voltage: 6.6
+  
+  # Check interval (seconds)
+  check_interval: 5
+
+# =============================================================================
+# DJI INTEGRATION
+# =============================================================================
+
+dji_integration:
+  enabled: true
+  
+  # GPS coordinate upgrade from DJI logs
+  gps_upgrade:
+    enabled: true
+    # Max time difference for coordinate match (seconds)
+    time_tolerance_s: 1.0
+    
+  # Photo linking
+  photo_linking:
+    enabled: true
+    # Link photos within this radius (meters)
+    radius_m: 10
+    # Time tolerance (seconds)
+    time_tolerance_s: 5
+    
+  # Photo capture settings (configured on DJI app)
+  photo_capture:
+    mode: "interval"  # interval, waypoint, manual
+    interval_seconds: 3
+
+# =============================================================================
+# REMOTE ADMINISTRATION
+# =============================================================================
+
+remote:
+  # Enable reverse SSH tunnel
+  enabled: false
+  
+  # Jumphost configuration
+  jumphost:
+    host: "jumphost.example.com"
+    port: 22
+    user: "tunnel"
+    
+  # Local tunnel port (unique per drone)
+  tunnel_port: 10001
+  
+  # Autossh settings
+  server_alive_interval: 30
+  server_alive_count_max: 3
+
+# =============================================================================
+# SWARM MODE
+# =============================================================================
+
+swarm:
+  # Enable swarm features
+  enabled: false
+  
+  # JSON-lines streaming
+  streaming:
+    enabled: false
+    # Stream to stdout (captured by controller)
+    output: "stdout"
+    
+  # Heartbeat reporting
+  heartbeat:
+    enabled: true
+    interval_s: 30
+
+# =============================================================================
+# ANALYSIS & REPORTING
+# =============================================================================
+
+analysis:
+  # Whitelist for known devices
+  whitelist_path: "${data_dir}/config/known_devices.json"
+  
+  # RSSI threshold (ignore weaker signals)
+  rssi_threshold: -85
+  
+  # Report output directory
+  reports_dir: "${data_dir}/reports"
+  
+  # Report formats to generate
+  formats:
+    - html
+    - json
+    - csv

@@ -1,0 +1,59 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "last_updated": "2025-12-25",
+    "property_id": "FACILITY-A",
+    "description": "Known devices whitelist for security audit"
+  },
+  "wifi_devices": [
+    {
+      "bssid": "AA:BB:CC:DD:EE:FF",
+      "essid": "CORP-WIFI",
+      "description": "Main office access point",
+      "location": "Building A, Floor 2",
+      "owner": "IT Department"
+    },
+    {
+      "bssid": "11:22:33:*",
+      "essid": null,
+      "description": "All Ubiquiti APs (OUI prefix match)",
+      "location": "Campus-wide",
+      "owner": "IT Department"
+    }
+  ],
+  "bluetooth_devices": [
+    {
+      "mac_address": "AA:BB:CC:DD:EE:FF",
+      "device_name": "Warehouse Scanner 01",
+      "description": "Inventory barcode scanner",
+      "location": "Warehouse B",
+      "owner": "Logistics"
+    },
+    {
+      "mac_address": null,
+      "device_name": "COMPANY-*",
+      "description": "All company-issued devices (name pattern)",
+      "location": "Various",
+      "owner": "Employees"
+    }
+  ],
+  "oui_whitelist": [
+    {
+      "prefix": "00:1A:2B",
+      "manufacturer": "Cisco Systems",
+      "description": "All Cisco network equipment"
+    },
+    {
+      "prefix": "F0:9F:C2",
+      "manufacturer": "Ubiquiti Inc",
+      "description": "All Ubiquiti equipment"
+    }
+  ],
+  "fingerprint_whitelist": [
+    {
+      "fingerprint_hash": "a1b2c3d4e5f6...",
+      "device_type": "Company Laptop",
+      "description": "Known corporate device fingerprint"
+    }
+  ]
+}

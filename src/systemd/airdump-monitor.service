@@ -1,0 +1,13 @@
+[Unit]
+Description=Monitor Mode Setup for Airdump
+Before=airdump.service
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/airmon-ng start wlan0
+ExecStop=/usr/sbin/airmon-ng stop wlan0mon
+
+[Install]
+WantedBy=airdump.target

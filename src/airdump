@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+"""
+Project Airdump - Main CLI Entry Point
+
+Wireless reconnaissance system for security audits.
+
+Usage:
+    ./airdump scan [options]       Start a scan
+    ./airdump report [options]     Generate reports
+    ./airdump stop                 Stop running scan
+    ./airdump status               Show scan status
+"""
+
+import argparse
+import getpass
+import logging
+import os
+import signal
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.absolute()
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.database import Database
+from core.utils import load_config, setup_logging, restore_managed_mode
+from core.models import ScanStatus
+
+
+# =============================================================================
+# PATH HELPERS
+# =============================================================================
+
+def resolve_db_path(config: dict, data_dir: str = None) -> Path:
+    """
+    Resolve database path from config.
+    
+    Config may have ${data_dir} or may already be expanded.
+    """
+    if data_dir is None:
+        data_dir = config.get('general', {}).get('data_dir', 'data')
+    
+    db_path_str = config.get('database', {}).get('path', 'database/airdump.db')
+    
+    # Expand ${data_dir} if present
+    if '${data_dir}' in db_path_str:
+        db_path_str = db_path_str.replace('${data_dir}', data_dir)
+    
+    db_path = Path(db_path_str)
+    
+    # If not absolute and doesn't start with ./ or ../, may need data_dir prefix
+    # But if it already contains data_dir path, use as-is
+    if not db_path.is_absolute() and not db_path_str.startswith(('./', '../')):
+        # Check if it already has data_dir prefix
+        if not db_path_str.startswith(data_dir + '/') and not db_path_str.startswith(data_dir + '\\'):
+            db_path = Path(data_dir) / db_path_str
+    
+    return db_path
+
+
+# =============================================================================
+# DISPLAY FUNCTIONS
+# =============================================================================
+
+def print_banner():
+    """Print application banner."""
+    banner = """
+    ╔═══════════════════════════════════════════════════════════╗
+    ║                      AIRDUMP                              ║
+    ║         Wireless Reconnaissance System                    ║
+    ╚═══════════════════════════════════════════════════════════╝
+    """
+    print(banner)
+
+
+def print_scan_summary(db: Database, session_id: str):
+    """Print scan results summary to terminal."""
+    session = db.get_session(session_id)
+    if not session:
+        print(f"Session {session_id} not found")
+        return
+    
+    stats = db.get_session_stats(session_id)
+    
+    print("\n" + "=" * 60)
+    print("                    SCAN SUMMARY")
+    print("=" * 60)
+    print(f"  Session ID:     {session_id}")
+    print(f"  Status:         {session.get('status', 'unknown')}")
+    print(f"  Start Time:     {session.get('start_time', 'N/A')}")
+    print(f"  End Time:       {session.get('end_time', 'N/A')}")
+    print("-" * 60)
+    print("                    DEVICES FOUND")
+    print("-" * 60)
+    print(f"  WiFi Devices:   {stats.get('wifi_device_count', 0)}")
+    print(f"    - APs:        {stats.get('wifi_ap_count', 0)}")
+    print(f"    - Clients:    {stats.get('wifi_client_count', 0)}")
+    print(f"  BT Devices:     {stats.get('bt_device_count', 0)}")
+    print(f"    - Classic:    {stats.get('bt_classic_count', 0)}")
+    print(f"    - BLE:        {stats.get('bt_ble_count', 0)}")
+    print("-" * 60)
+    print(f"  GPS Points:     {stats.get('gps_point_count', 0)}")
+    print("=" * 60 + "\n")
+
+
+def print_status(db: Database):
+    """Print current status and recent sessions."""
+    sessions = db.get_sessions(limit=5)
+    
+    print("\n" + "=" * 60)
+    print("                  RECENT SESSIONS")
+    print("=" * 60)
+    
+    if not sessions:
+        print("  No sessions found")
+    else:
+        print(f"  {'Session ID':<35} {'Status':<12} {'WiFi':<6} {'BT':<6}")
+        print("-" * 60)
+        for s in sessions:
+            print(f"  {s['session_id']:<35} {s.get('status', 'N/A'):<12} "
+                  f"{s.get('wifi_device_count', 0):<6} {s.get('bt_device_count', 0):<6}")
+    
+    print("=" * 60 + "\n")
+
+
+# =============================================================================
+# ENCRYPTION KEY HANDLING
+# =============================================================================
+
+def get_encryption_key(args) -> str | None:
+    """Get encryption key from args, env, or prompt."""
+    # Check if encryption requested
+    if not args.encryptdb:
+        return None
+    
+    # Try environment variable first
+    env_key = os.environ.get('AIRDUMP_DB_KEY')
+    if env_key:
+        print("[*] Using encryption key from AIRDUMP_DB_KEY environment variable")
+        return env_key
+    
+    # Prompt user
+    print("\n[!] Database encryption enabled")
+    key = getpass.getpass("    Enter encryption key: ")
+    confirm = getpass.getpass("    Confirm encryption key: ")
+    
+    if key != confirm:
+        print("[!] Keys do not match")
+        sys.exit(1)
+    
+    if len(key) < 8:
+        print("[!] Key must be at least 8 characters")
+        sys.exit(1)
+    
+    return key
+
+
+# =============================================================================
+# GPG KEYPAIR GENERATION
+# =============================================================================
+
+def create_gpg_keypair(config: dict, data_dir: str = None):
+    """
+    Generate a GPG keypair for pcap encryption.
+    
+    Creates:
+    - Public key: For encrypting pcap files on drone
+    - Private key: For decrypting pcap files on workstation
+    """
+    import subprocess
+    import tempfile
+    
+    print_banner()
+    print("[*] Creating GPG keypair for pcap encryption...\n")
+    
+    if data_dir is None:
+        data_dir = config.get('general', {}).get('data_dir', 'data')
+    
+    # Resolve paths from config
+    gpg_config = config.get('capture', {}).get('gpg', {})
+    public_key_path = gpg_config.get('public_key', '${data_dir}/config/airdump-public.gpg')
+    private_key_path = gpg_config.get('private_key', '${data_dir}/config/airdump-private.gpg')
+    
+    # Expand ${data_dir}
+    public_key_path = public_key_path.replace('${data_dir}', data_dir)
+    private_key_path = private_key_path.replace('${data_dir}', data_dir)
+    
+    public_key_file = Path(public_key_path)
+    private_key_file = Path(private_key_path)
+    
+    # Check if keys already exist
+    if public_key_file.exists() or private_key_file.exists():
+        print("[!] GPG keys already exist:")
+        if public_key_file.exists():
+            print(f"    - {public_key_file}")
+        if private_key_file.exists():
+            print(f"    - {private_key_file}")
+        response = input("\n    Overwrite? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("[*] Aborted")
+            return False
+    
+    # Create config directory
+    public_key_file.parent.mkdir(parents=True, exist_ok=True)
+    private_key_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Get key parameters
+    print("    Key Identity (for key metadata):")
+    name = input("      Name [Airdump]: ").strip() or "Airdump"
+    email = input("      Email [airdump@localhost]: ").strip() or "airdump@localhost"
+    
+    # Get passphrase for private key
+    print("\n    Private Key Protection:")
+    passphrase = getpass.getpass("      Passphrase (empty for none): ")
+    if passphrase:
+        confirm = getpass.getpass("      Confirm passphrase: ")
+        if passphrase != confirm:
+            print("[!] Passphrases do not match")
+            return False
+    
+    # Create temporary GPG home to avoid polluting user's keyring
+    with tempfile.TemporaryDirectory() as gpg_home:
+        env = os.environ.copy()
+        env['GNUPGHOME'] = gpg_home
+        
+        # Generate key using GPG batch mode
+        key_params = f"""
+%echo Generating Airdump GPG keypair...
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: {name}
+Name-Email: {email}
+Expire-Date: 0
+{'Passphrase: ' + passphrase if passphrase else '%no-protection'}
+%commit
+%echo Done
+"""
+        
+        print("\n[*] Generating 4096-bit RSA keypair (this may take a moment)...")
+        
+        try:
+            # Generate the key
+            result = subprocess.run(
+                ['gpg', '--batch', '--gen-key'],
+                input=key_params,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            
+            if result.returncode != 0:
+                print(f"[!] Key generation failed: {result.stderr}")
+                return False
+            
+            # Get the key ID
+            result = subprocess.run(
+                ['gpg', '--list-keys', '--keyid-format', 'long', email],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            
+            # Export public key
+            result = subprocess.run(
+                ['gpg', '--armor', '--export', email],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            
+            if result.returncode != 0 or not result.stdout:
+                print(f"[!] Failed to export public key: {result.stderr}")
+                return False
+            
+            public_key_file.write_text(result.stdout)
+            print(f"[+] Public key saved: {public_key_file}")
+            
+            # Export private key
+            export_cmd = ['gpg', '--armor', '--export-secret-keys', email]
+            if passphrase:
+                export_cmd = ['gpg', '--armor', '--batch', '--pinentry-mode', 'loopback',
+                             '--passphrase', passphrase, '--export-secret-keys', email]
+            
+            result = subprocess.run(
+                export_cmd,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            
+            if result.returncode != 0 or not result.stdout:
+                print(f"[!] Failed to export private key: {result.stderr}")
+                return False
+            
+            private_key_file.write_text(result.stdout)
+            # Restrict private key permissions
+            private_key_file.chmod(0o600)
+            print(f"[+] Private key saved: {private_key_file} (mode 600)")
+            
+        except FileNotFoundError:
+            print("[!] GPG not found. Install with: sudo apt install gnupg")
+            return False
+        except subprocess.TimeoutExpired:
+            print("[!] Key generation timed out")
+            return False
+    
+    print("\n" + "=" * 60)
+    print("                  KEYPAIR CREATED")
+    print("=" * 60)
+    print(f"  Public key:  {public_key_file}")
+    print(f"  Private key: {private_key_file}")
+    print("-" * 60)
+    print("  IMPORTANT:")
+    print("  - Public key stays on the drone for encrypting pcaps")
+    print("  - Private key should be copied to your workstation")
+    print("  - Delete private key from drone after copying!")
+    print("-" * 60)
+    print("  To decrypt pcaps on workstation:")
+    print(f"    gpg --import {private_key_file.name}")
+    print("    gpg --decrypt capture.pcapng.gpg > capture.pcapng")
+    print("=" * 60 + "\n")
+    
+    return True
+
+
+# =============================================================================
+# SCAN COMMAND
+# =============================================================================
+
+def cmd_scan(args, config: dict):
+    """Execute scan command."""
+    from scan_orchestrator import ScanOrchestrator
+    
+    print_banner()
+    print(f"[*] Starting scan...")
+    print(f"    Duration: {args.duration or 'unlimited'} seconds")
+    print(f"    GPS: {'enabled' if args.gps else 'disabled'}")
+    print(f"    Encryption: {'enabled' if args.encryptdb else 'disabled'}")
+    
+    # Get encryption key if needed
+    encryption_key = get_encryption_key(args)
+    
+    # Setup data directory
+    data_dir = args.data_dir or config.get('general', {}).get('data_dir', 'data')
+    
+    # Create orchestrator - pass mock_gps=False when GPS enabled via --gps
+    orchestrator = ScanOrchestrator(
+        config_file=args.config,
+        data_dir=data_dir,
+        mock_gps=False,  # We handle GPS via config, not mock
+    )
+    
+    # Override config with CLI args AFTER orchestrator is created
+    if args.gps:
+        orchestrator.config.setdefault('gps', {})['enabled'] = True
+    else:
+        orchestrator.config.setdefault('gps', {})['enabled'] = False
+    
+    # Inject encryption key if provided
+    if encryption_key:
+        orchestrator.config.setdefault('database', {})['encryption_key'] = encryption_key
+    
+    session_id = None
+    
+    try:
+        # Start scan
+        success = orchestrator.start(
+            session_name=args.name,
+            property_id=args.property,
+            duration=args.duration,
+        )
+        
+        if not success:
+            print("[!] Failed to start scan")
+            sys.exit(1)
+        
+        session_id = orchestrator.get_session_id()
+        print(f"[*] Scan started: {session_id}")
+        
+        # If no duration, wait for interrupt
+        if not args.duration:
+            print("[*] Press Ctrl+C to stop scan")
+            while orchestrator._running:
+                time.sleep(1)
+        
+    except KeyboardInterrupt:
+        print("\n[*] Stopping scan...")
+    finally:
+        orchestrator.stop()
+        
+        # Display results if requested
+        if args.display and session_id and orchestrator.database:
+            print_scan_summary(orchestrator.database, session_id)
+    
+    print(f"[*] Scan complete: {session_id}")
+    
+    # Return session ID for chaining
+    return session_id
+
+
+# =============================================================================
+# REPORT COMMAND
+# =============================================================================
+
+def cmd_report(args, config: dict):
+    """Execute report command."""
+    from analysis.analyzer import Analyzer
+    from analysis.reporter import Reporter
+    
+    print_banner()
+    
+    # Get encryption key if needed
+    encryption_key = get_encryption_key(args)
+    
+    # Setup database
+    data_dir = args.data_dir or config.get('general', {}).get('data_dir', 'data')
+    db_path = resolve_db_path(config, data_dir)
+    
+    db = Database(str(db_path), encryption_key=encryption_key)
+    
+    # Get session ID - default to latest
+    session_id = args.session
+    if not session_id:
+        latest = db.get_latest_session()
+        if not latest:
+            print("[!] No sessions found in database")
+            sys.exit(1)
+        session_id = latest['session_id']
+        print(f"[*] Using latest session: {session_id}")
+    
+    # Check session exists
+    session = db.get_session(session_id)
+    if not session:
+        print(f"[!] Session not found: {session_id}")
+        sys.exit(1)
+    
+    print(f"[*] Generating reports for: {session_id}")
+    
+    # Run analysis
+    whitelist_path = args.whitelist or config.get('analysis', {}).get('whitelist_path')
+    if whitelist_path and '${data_dir}' in whitelist_path:
+        whitelist_path = whitelist_path.replace('${data_dir}', data_dir)
+    
+    analyzer = Analyzer(
+        database=db,
+        whitelist_file=whitelist_path if whitelist_path and Path(whitelist_path).exists() else None,
+    )
+    
+    result = analyzer.analyze_session(session_id)
+    
+    if not result:
+        print("[!] Analysis failed")
+        sys.exit(1)
+    
+    # Generate reports
+    reports_dir = args.output or config.get('analysis', {}).get('reports_dir', f'{data_dir}/reports')
+    if '${data_dir}' in reports_dir:
+        reports_dir = reports_dir.replace('${data_dir}', data_dir)
+    
+    reporter = Reporter(output_dir=reports_dir)
+    
+    generated = []
+    
+    formats = args.format or ['html', 'json']
+    
+    if 'html' in formats:
+        path = reporter.generate_html_report(result)
+        if path:
+            generated.append(path)
+    
+    if 'json' in formats:
+        path = reporter.generate_json_report(result)
+        if path:
+            generated.append(path)
+    
+    if 'csv' in formats:
+        path = reporter.generate_csv_report(result)
+        if path:
+            generated.append(path)
+    
+    if 'map' in formats:
+        path = reporter.generate_map(result)
+        if path:
+            generated.append(path)
+    
+    print("\n[*] Generated reports:")
+    for path in generated:
+        print(f"    - {path}")
+    
+    # Display summary if requested
+    if args.display:
+        print_scan_summary(db, session_id)
+    
+    db.close()
+
+
+# =============================================================================
+# STOP COMMAND
+# =============================================================================
+
+def cmd_stop(args, config: dict):
+    """Stop running scan."""
+    import subprocess
+    
+    print("[*] Stopping Airdump scan...")
+    
+    # Send SIGTERM to scan orchestrator
+    result = subprocess.run(
+        ["pkill", "-TERM", "-f", "scan_orchestrator"],
+        capture_output=True
+    )
+    
+    if result.returncode == 0:
+        print("[*] Sent stop signal to scan orchestrator")
+    else:
+        print("[*] No running scan found")
+    
+    # Restore WiFi interface
+    print("[*] Restoring WiFi interface...")
+    restore_managed_mode()
+    
+    print("[*] Done")
+
+
+# =============================================================================
+# STATUS COMMAND
+# =============================================================================
+
+def cmd_status(args, config: dict):
+    """Show scan status."""
+    print_banner()
+    
+    # Get encryption key if needed
+    encryption_key = get_encryption_key(args)
+    
+    # Setup database
+    data_dir = args.data_dir or config.get('general', {}).get('data_dir', 'data')
+    db_path = resolve_db_path(config, data_dir)
+    
+    if not db_path.exists():
+        print("[!] Database not found. No scans have been run yet.")
+        return
+    
+    db = Database(str(db_path), encryption_key=encryption_key)
+    print_status(db)
+    db.close()
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Airdump - Wireless Reconnaissance System",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  ./airdump scan --duration 300          Scan for 5 minutes
+  ./airdump scan --gps --display         Scan with GPS, show results
+  ./airdump report                       Generate report for last scan
+  ./airdump report --session <id>        Generate report for specific scan
+  ./airdump status                       Show recent scans
+  ./airdump stop                         Stop running scan
+        """
+    )
+    
+    # Global options
+    parser.add_argument('--config', '-c', default='config/config.yaml',
+                        help='Config file path (default: config/config.yaml)')
+    parser.add_argument('--data-dir', '-d',
+                        help='Data directory (overrides config)')
+    parser.add_argument('--encryptdb', action='store_true',
+                        help='Enable database encryption (prompts for key)')
+    parser.add_argument('--create-keypair', action='store_true',
+                        help='Generate GPG keypair for pcap encryption')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Verbose output')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # Scan command
+    scan_parser = subparsers.add_parser('scan', help='Start a wireless scan')
+    scan_parser.add_argument('--duration', '-t', type=int,
+                             help='Scan duration in seconds (default: unlimited)')
+    scan_parser.add_argument('--name', '-n',
+                             help='Session name/description')
+    scan_parser.add_argument('--property', '-p',
+                             help='Property ID being scanned')
+    scan_parser.add_argument('--gps', action='store_true',
+                             help='Enable GPS (default: disabled)')
+    scan_parser.add_argument('--display', action='store_true',
+                             help='Display results summary after scan')
+    
+    # Report command
+    report_parser = subparsers.add_parser('report', help='Generate reports')
+    report_parser.add_argument('--session', '-s',
+                               help='Session ID (default: latest scan)')
+    report_parser.add_argument('--format', '-f', nargs='+',
+                               choices=['html', 'json', 'csv', 'map'],
+                               help='Report formats (default: html json)')
+    report_parser.add_argument('--output', '-o',
+                               help='Output directory')
+    report_parser.add_argument('--whitelist', '-w',
+                               help='Whitelist file for comparison')
+    report_parser.add_argument('--display', action='store_true',
+                               help='Display summary to terminal')
+    
+    # Stop command
+    stop_parser = subparsers.add_parser('stop', help='Stop running scan')
+    
+    # Status command
+    status_parser = subparsers.add_parser('status', help='Show scan status')
+    
+    args = parser.parse_args()
+    
+    # Load config
+    config = {}
+    if Path(args.config).exists():
+        config = load_config(args.config)
+    
+    # Setup logging
+    log_level = 'DEBUG' if args.verbose else config.get('general', {}).get('log_level', 'INFO')
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Handle --create-keypair (standalone action, no subcommand needed)
+    if args.create_keypair:
+        data_dir = args.data_dir or config.get('general', {}).get('data_dir', 'data')
+        success = create_gpg_keypair(config, data_dir)
+        sys.exit(0 if success else 1)
+    
+    # Route to command
+    if args.command == 'scan':
+        cmd_scan(args, config)
+    elif args.command == 'report':
+        cmd_report(args, config)
+    elif args.command == 'stop':
+        cmd_stop(args, config)
+    elif args.command == 'status':
+        cmd_status(args, config)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

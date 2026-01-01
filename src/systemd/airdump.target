@@ -1,0 +1,7 @@
+[Unit]
+Description=Airdump Target
+Documentation=https://github.com/yourrepo/airdump
+After=network.target
+
+[Install]
+WantedBy=multi-user.target

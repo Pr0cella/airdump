@@ -1,0 +1,33 @@
+[Unit]
+Description=Airdump Wireless Scanner
+Documentation=https://github.com/yourrepo/airdump
+After=network.target gpsd.service kismet.service
+Wants=gpsd.service kismet.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/airdump
+ExecStartPre=/opt/airdump/scripts/preflight_check.sh
+ExecStart=/usr/bin/python3 -m scan_orchestrator --config /opt/airdump/config/config.yaml --data-dir /opt/airdump/data
+ExecStop=/opt/airdump/scripts/stop_scan.sh
+Restart=on-failure
+RestartSec=10
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+# Graceful shutdown timeout
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=airdump
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
