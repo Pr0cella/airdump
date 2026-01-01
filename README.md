@@ -2,6 +2,8 @@
 
 **Wireless Signal Intelligence System for Industrial Property Security Audits**
 
+## Note: Work in progress.
+
 A drone-mounted wireless reconnaissance system to detect, fingerprint, and identify unknown Bluetooth, WiFi, and RF devices across industrial properties. Uses Kismet for wireless detection, tshark for deep packet analysis, with planned SDR integration for broader RF spectrum monitoring. Designed to run on a ZeroPi SBC with support for both automated (systemd) and manual operation modes.
 
 ---
