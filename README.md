@@ -1,4 +1,4 @@
-# Project Airdump (placeholder name)
+# Project Airdump
 
 ** Distributed Signal Recon System for Security Audits with multiple autonomous nodes**
 
