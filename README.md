@@ -1,6 +1,6 @@
 # Project Airdump
 
-** Distributed Signal Recon System for Security Audits with multiple autonomous nodes**
+**Distributed Signal Recon System for Security Audits with multiple autonomous nodes**
 
 ## Note: Work in progress.
 
