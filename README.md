@@ -1,10 +1,11 @@
-# Project Airdump
+# Project Airdump (placeholder name)
 
-**Wireless Signal Intelligence System for Industrial Property Security Audits**
+** Distributed Signal Recon System for Security Audits with multiple autonomous nodes**
 
 ## Note: Work in progress.
 
-A drone-mounted wireless reconnaissance system to detect, fingerprint, and identify unknown Bluetooth, WiFi, and RF devices across industrial properties. Uses Kismet for wireless detection, tshark for deep packet analysis, with planned SDR integration for broader RF spectrum monitoring. Designed to run on a ZeroPi SBC with support for both automated (systemd) and manual operation modes.
+A wireless reconnaissance system to detect, fingerprint, and identify unknown Bluetooth, WiFi, and RF devices across large areas via multiple scan nodes (designed primarily for drone operation). 
+Uses Kismet for wireless detection, tshark for deep packet analysis, with planned SDR integration for broader RF spectrum monitoring. Designed to run on a ZeroPi SBC with support for both automated (systemd) and manual operation modes.
 
 ---
 
